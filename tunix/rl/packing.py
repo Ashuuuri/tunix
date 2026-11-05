@@ -36,7 +36,7 @@ from tunix.rl.agentic.agents import agent_types
 
 try:
   from tunix.rl import _packing_ext  # pylint: disable=g-import-not-at-top
-except ModuleNotFoundError:
+except ImportError:  # team40: C++ ext not built (e.g. source checkout on macOS)
   _packing_ext = None
 
 ROUTED_EXPERTS_ENCODE_MODES = common_datatypes.ROUTED_EXPERTS_ENCODE_MODES

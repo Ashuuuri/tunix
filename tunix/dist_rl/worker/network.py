@@ -65,7 +65,10 @@ from typing import (
 from absl import logging
 import cloudpickle
 import numpy as np
-from tunix.dist_rl.worker import _compression_ext
+try:
+  from tunix.dist_rl.worker import _compression_ext
+except ImportError:  # team40: C++ ext not built; only needed by dist_rl bulk transfer
+  _compression_ext = None
 
 
 # Default per-call deadline (seconds) applied to remote invocations so a dead or

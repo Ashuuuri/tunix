@@ -28,7 +28,18 @@ class TVCacheEnv(BaseTaskEnv):
                  operation_timeout=30.0, query_timeout=5.0, max_rows=10000,
                  cache_namespace='', use_cache=True, grade_final_sql=False, **kwargs):
         config = dict(task or {})
-        self.task_path = Path(task_path or config['task_path']).resolve()
+        if task_path is None:
+            task_path = config['task_path']
+        # GRPOLearner passes dataset rows as numpy arrays (e.g. shape (1,)).
+        if hasattr(task_path, 'tolist'):
+            task_path = task_path.tolist()
+        if isinstance(task_path, (list, tuple)):
+            if len(task_path) != 1:
+                raise ValueError(f'Expected one task_path per env, got {len(task_path)}')
+            task_path = task_path[0]
+        if isinstance(task_path, bytes):
+            task_path = task_path.decode()
+        self.task_path = Path(str(task_path)).resolve()
         if max_steps < 1 or operation_timeout <= 0 or query_timeout <= 0 or max_rows < 1:
             raise ValueError('Step, timeout, and row limits must be positive')
         super().__init__(task=config, reward_fn=reward_fn, max_steps=max_steps, **kwargs)
@@ -121,8 +132,11 @@ class TVCacheEnv(BaseTaskEnv):
 
     def _initial_observation(self):
         # ToolAgent consumes question; include schema there, not just as a spare key.
+        # 'prompts' is required: the agent stores this first observation as the
+        # trajectory task, and GRPOLearner later reads task['prompts'].
         return {'question': self._record['question'] + '\n\nDatabase schema:\n' + self._record['schema'],
-                'db_id': self._record['db_id']}
+                'db_id': self._record['db_id'],
+                'prompts': [self._record['question']]}
 
     @staticmethod
     def _normalize(action):
@@ -179,9 +193,28 @@ class TVCacheEnv(BaseTaskEnv):
             outputs[call_id] = value
         return outputs
 
+    @staticmethod
+    def _unwrap_finish_text(answer):
+        """Small models often print the finish call as bare JSON without
+        <tool_call> tags, so the parser treats it as plain text. Accept that
+        exact shape; anything else is returned unchanged."""
+        text = answer.strip()
+        if text.startswith('<tool_call>') and text.endswith('</tool_call>'):
+            text = text[len('<tool_call>'):-len('</tool_call>')].strip()
+        try:
+            call = json.loads(text)
+        except (ValueError, TypeError):
+            return answer
+        if (isinstance(call, dict) and call.get('name') == 'finish'
+                and isinstance(call.get('arguments'), dict)
+                and isinstance(call['arguments'].get('response'), str)):
+            return call['arguments']['response']
+        return answer
+
     def _step_impl(self, action):
         answer, calls = self._normalize(action)
         if answer is not None:
+            answer = self._unwrap_finish_text(answer)
             # Reward function is responsible for assessing the final response.
             if self.reward_fn is not None:
                 reward = float(self.reward_fn(task=self._record, action=answer))

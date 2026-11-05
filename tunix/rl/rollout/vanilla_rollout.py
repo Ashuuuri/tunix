@@ -15,6 +15,7 @@
 """Vanilla rollout worker with Tunix sampler."""
 
 import dataclasses
+import itertools
 from typing import Any, Optional, Tuple
 
 from flax import nnx
@@ -34,11 +35,23 @@ class VanillaRollout(base_rollout.BaseRollout):
       tokenizer: Any,
       cache_config_or_size: base_rollout.CacheConfig,
   ):
+    # team40: per-call counter so that seed=None does not mean PRNGKey(0) on
+    # every call. Agentic rollouts call generate() once per trajectory turn
+    # with a single prompt; a constant key made all G rollouts identical.
+    self._generate_calls = itertools.count()
     self._sampler = sampler.Sampler(
         model,
         tokenizer,
         sampler.CacheConfig(**dataclasses.asdict(cache_config_or_size)),
     )
+
+  def _next_seed(self, seed):
+    """Fresh PRNG key per call; an explicit seed stays reproducible."""
+    call = next(self._generate_calls)
+    if seed is None:
+      seed = 0
+    key = jax.random.PRNGKey(seed) if isinstance(seed, int) else seed
+    return jax.random.fold_in(key, call)
 
   def generate(
       self,
@@ -57,7 +70,7 @@ class VanillaRollout(base_rollout.BaseRollout):
         temperature=rollout_config.temperature,
         top_p=rollout_config.top_p,
         top_k=rollout_config.top_k,
-        seed=rollout_config.seed,  # pyrefly: ignore[bad-argument-type]
+        seed=self._next_seed(rollout_config.seed),
         pad_output=False,
         eos_tokens=rollout_config.eos_tokens,
         return_logprobs=rollout_config.return_logprobs,
